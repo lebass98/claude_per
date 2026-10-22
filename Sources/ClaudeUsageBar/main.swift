@@ -154,16 +154,26 @@ enum Updater {
 
         let target = Bundle.main.bundlePath
         let pid = ProcessInfo.processInfo.processIdentifier
+        let log = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/ClaudeUsageBar-update.log")
+        // 종료 대기 → 새 앱을 옆에 복사한 뒤 교체(실패해도 기존 앱 유지) → 재실행 재시도
         let script = """
+        exec >"$4" 2>&1
+        echo "[$(date)] 업데이트 시작"
         while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
-        rm -rf "$1" && /usr/bin/ditto "$2" "$1"
+        sleep 1
+        rm -rf "$1.new"
+        /usr/bin/ditto "$2" "$1.new" || { echo "복사 실패"; open "$1"; exit 1; }
+        rm -rf "$1" && mv "$1.new" "$1" || { echo "교체 실패"; exit 1; }
         /usr/bin/xattr -dr com.apple.quarantine "$1" 2>/dev/null
-        open "$1"
+        for i in 1 2 3 4 5; do
+            open "$1" && sleep 2 && pgrep -x ClaudeUsageBar >/dev/null && { echo "재실행 성공 ($i회)"; break; }
+            echo "재실행 재시도 $i"; sleep 2
+        done
         rm -rf "$3"
         """
         let sh = Process()
         sh.executableURL = URL(fileURLWithPath: "/bin/sh")
-        sh.arguments = ["-c", script, "sh", target, newApp.path, tmp.path]
+        sh.arguments = ["-c", script, "sh", target, newApp.path, tmp.path, log.path]
         try sh.run()
         NSApp.terminate(nil)
     }
@@ -266,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateTitle() {
         guard let button = statusItem.button else { return }
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        let label = NSFont.systemFont(ofSize: 10, weight: .regular)
+        let label = NSFont.systemFont(ofSize: 12, weight: .semibold)
 
         if usage == nil, lastError != nil {
             button.attributedTitle = NSAttributedString(
@@ -277,7 +287,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let s = NSMutableAttributedString()
         func add(_ tag: String, _ p: Int?) {
             if s.length > 0 { s.append(NSAttributedString(string: "  ", attributes: [.font: font])) }
-            s.append(NSAttributedString(string: tag + " ", attributes: [.font: label, .foregroundColor: NSColor.secondaryLabelColor]))
+            // 기간 라벨(5h/7d)은 흐리지 않게 기본 글자색(다크 메뉴바에서 흰색)으로
+            s.append(NSAttributedString(string: tag + " ", attributes: [.font: label, .foregroundColor: NSColor.labelColor]))
             let text = p.map { "\($0)%" } ?? "–"
             s.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color(forRemaining: p ?? 100)]))
         }
