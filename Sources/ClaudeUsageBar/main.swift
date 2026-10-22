@@ -306,6 +306,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return known[name] ?? String(name.prefix(2))
     }
 
+    /// 마우스 오버 툴팁: 한도별 초기화 날짜·시간만
+    private func resetTooltip() -> String? {
+        var rows: [(String, UsageWindow?)] = [("5h", usage?.five_hour), ("7d", usage?.seven_day)]
+        for l in usage?.limits ?? [] where l.kind == "weekly_scoped" {
+            rows.append((shortName(l.scope?.model?.display_name), l.window))
+        }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ko_KR")
+        f.dateFormat = "M/d(E) HH:mm"
+        let lines = rows.compactMap { tag, w in w?.resetDate.map { "\(tag)  \(f.string(from: $0))" } }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
     private func updateTitle() {
         guard let button = statusItem.button else { return }
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
@@ -341,21 +354,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             s.append(NSAttributedString(string: " ↑", attributes: [.font: font, .foregroundColor: NSColor.systemBlue]))
         }
         button.attributedTitle = s
+        button.toolTip = resetTooltip()
     }
 
     // MARK: 메뉴
-
-    private func resetText(_ w: UsageWindow?) -> String {
-        guard let d = w?.resetDate else { return "" }
-        let secs = Int(d.timeIntervalSinceNow)
-        guard secs > 0 else { return " · 곧 초기화" }
-        let days = secs / 86400, h = (secs % 86400) / 3600, m = (secs % 3600) / 60
-        let left = days > 0 ? "\(days)일 \(h)시간" : (h > 0 ? "\(h)시간 \(m)분" : "\(m)분")
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = days > 0 ? "M/d(E) HH:mm" : "HH:mm"
-        return " · \(left) 후 초기화 (\(f.string(from: d)))"
-    }
 
     private func info(_ title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -363,41 +365,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    private func bar(_ p: Int?) -> String {
-        guard let p else { return "" }
-        let filled = min(10, max(0, Int((Double(p) / 10).rounded())))
-        return String(repeating: "▓", count: filled) + String(repeating: "░", count: 10 - filled) + "  "
-    }
-
     private func rebuildMenu() {
         let menu = NSMenu()
 
-        var rows: [(String, UsageWindow?)] = [
-            ("5시간 세션", usage?.five_hour),
-            ("주간 (전체 모델)", usage?.seven_day),
-        ]
-        // 모델별 주간 한도 (예: Fable, Opus)
-        for l in usage?.limits ?? [] where l.kind == "weekly_scoped" {
-            rows.append(("주간 (\(l.scope?.model?.display_name ?? "모델별"))", l.window))
-        }
-        for (name, w) in rows {
-            guard let w, let p = pct(w), let r = remaining(w) else { continue }
-            menu.addItem(info("\(name)"))
-            menu.addItem(info("   \(bar(r))\(r)% 남음 (사용 \(p)%)\(resetText(w))"))
-        }
-
         if let e = lastError {
-            menu.addItem(.separator())
             menu.addItem(info("⚠ \(e.message)"))
         }
         if let t = lastUpdated {
             let f = DateFormatter()
             f.dateFormat = "HH:mm:ss"
-            menu.addItem(.separator())
             menu.addItem(info("마지막 갱신 \(f.string(from: t))"))
         }
 
-        menu.addItem(.separator())
+        if menu.numberOfItems > 0 { menu.addItem(.separator()) }
         let r = NSMenuItem(title: "지금 새로고침", action: #selector(refresh), keyEquivalent: "r")
         r.target = self
         menu.addItem(r)
