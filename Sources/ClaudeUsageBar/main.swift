@@ -278,6 +278,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 상태바용 짧은 모델 라벨 (Fable → Fb, 그 외는 앞 두 글자)
+    private func shortName(_ name: String?) -> String {
+        guard let name, !name.isEmpty else { return "M" }
+        let known = ["Fable": "Fb", "Opus": "Op", "Sonnet": "Sn", "Haiku": "Hk"]
+        return known[name] ?? String(name.prefix(2))
+    }
+
     private func updateTitle() {
         guard let button = statusItem.button else { return }
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
@@ -301,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if mode != .fiveHour { add("7d", remaining(usage?.seven_day)) }
         if showModels {
             for l in usage?.limits ?? [] where l.kind == "weekly_scoped" {
-                add(l.scope?.model?.display_name ?? "모델", remaining(l.window))
+                add(shortName(l.scope?.model?.display_name), remaining(l.window))
             }
         }
         if lastError != nil {
