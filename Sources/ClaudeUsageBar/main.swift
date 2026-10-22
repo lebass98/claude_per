@@ -256,6 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateTimer: Timer?
     private var pendingUpdate: ReleaseInfo?
     private var profile: Profile?
+    private var loginProcess: Process?
     private var updateStatus: String?
     // 429 백오프: 이 시각 전에는 요청하지 않음, 연속 실패마다 대기 시간 2배 (최대 10분)
     private var nextAllowedFetch = Date.distantPast
@@ -414,7 +415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch lastError {
         case .noCredentials?:
             menu.addItem(info("⚠ 로그인 안 됨"))
-            menu.addItem(info("   터미널에서 claude 실행 후 /login"))
+            menu.addItem(info("   아래 \"브라우저로 로그인…\"을 눌러 주세요"))
         case .unauthorized?:
             menu.addItem(info("⚠ 로그인 만료"))
             menu.addItem(info("   Claude Code를 한 번 실행하면 갱신됩니다"))
@@ -429,6 +430,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let loginCheck = NSMenuItem(title: "로그인 확인", action: #selector(checkLogin(_:)), keyEquivalent: "l")
         loginCheck.target = self
         menu.addItem(loginCheck)
+        if loginProcess != nil {
+            menu.addItem(info("브라우저에서 로그인 진행 중…"))
+        } else {
+            let browser = NSMenuItem(title: "브라우저로 로그인…", action: #selector(loginWithBrowser), keyEquivalent: "")
+            browser.target = self
+            menu.addItem(browser)
+        }
         menu.addItem(.separator())
 
         for line in resetLines() { menu.addItem(info(line)) }
@@ -553,6 +561,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Claude Code CLI 경로 (GUI 앱은 셸 PATH를 못 받으므로 흔한 설치 위치 → 로그인 셸 순으로 찾음)
+    private func claudeCLI() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.local/bin/claude",
+            "\(home)/.local/share/node/current/bin/claude",
+            "\(home)/.claude/local/claude",
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+        ]
+        if let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) { return found }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-ilc", "command -v claude"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        guard (try? p.run()) != nil else { return nil }
+        p.waitUntilExit()
+        let path = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .split(separator: "\n").last.map(String.init)?.trimmingCharacters(in: .whitespaces)
+        return path.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
+    }
+
+    /// `claude auth login`으로 브라우저 로그인 → 키체인 갱신 → 계정·사용량 다시 확인
+    @objc private func loginWithBrowser() {
+        guard loginProcess == nil else { return }
+        guard let cli = claudeCLI() else {
+            alert("Claude Code를 찾을 수 없습니다.",
+                  detail: "브라우저 로그인은 Claude Code(claude)로 진행됩니다. Claude Code를 먼저 설치해 주세요.",
+                  buttons: ["확인"])
+            return
+        }
+        if profile != nil,
+           alert("다른 계정으로 로그인할까요?",
+                 detail: "Claude Code의 로그인도 함께 바뀝니다.",
+                 buttons: ["브라우저로 로그인", "취소"]) != .alertFirstButtonReturn {
+            return
+        }
+
+        let log = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/ClaudeUsageBar-login.log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: cli)
+        p.arguments = ["auth", "login", "--claudeai"]
+        p.standardInput = FileHandle.nullDevice
+        if let h = try? FileHandle(forWritingTo: log) {
+            p.standardOutput = h
+            p.standardError = h
+        }
+        p.terminationHandler = { [weak self] proc in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.loginProcess = nil
+                if proc.terminationStatus == 0 {
+                    self.lastError = nil
+                    self.nextAllowedFetch = .distantPast
+                    self.checkLogin(self)  // 결과 팝업 + 사용량 갱신
+                    self.refresh()
+                } else {
+                    let tail = (try? String(contentsOf: log, encoding: .utf8))?
+                        .split(separator: "\n").suffix(3).joined(separator: "\n") ?? ""
+                    self.rebuildMenu()
+                    self.alert("브라우저 로그인에 실패했습니다.", detail: tail, buttons: ["확인"])
+                }
+            }
+        }
+        do {
+            try p.run()
+            loginProcess = p
+            rebuildMenu()
+        } catch {
+            alert("브라우저 로그인을 시작하지 못했습니다.", detail: error.localizedDescription, buttons: ["확인"])
+        }
+    }
+
     /// 로그인 상태 확인 (sender가 nil이면 조용히, 메뉴에서 누르면 팝업으로 결과 안내)
     @objc private func checkLogin(_ sender: Any?) {
         Task { @MainActor in
@@ -583,10 +668,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch failure {
                 case .noCredentials?:
                     alert("로그인되어 있지 않습니다.",
-                          detail: "터미널에서 claude를 실행한 뒤 /login으로 로그인해 주세요.", buttons: ["확인"])
+                          detail: "메뉴의 \"브라우저로 로그인…\"을 눌러 로그인해 주세요.", buttons: ["확인"])
                 case .unauthorized?:
                     alert("로그인이 만료되었습니다.",
-                          detail: "Claude Code를 한 번 실행하면 자동으로 갱신됩니다.\n갱신되지 않으면 /login으로 다시 로그인해 주세요.",
+                          detail: "Claude Code를 한 번 실행하면 자동으로 갱신됩니다.\n갱신되지 않으면 메뉴의 \"브라우저로 로그인…\"으로 다시 로그인해 주세요.",
                           buttons: ["확인"])
                 default:
                     alert("로그인 상태를 확인하지 못했습니다.", detail: failure?.message ?? "", buttons: ["확인"])
