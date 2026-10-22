@@ -122,7 +122,8 @@ enum Updater {
         Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0") ?? 0
     }
 
-    /// ~/Library/CloudStorage/GoogleDrive-*/(내 드라이브|My Drive)/ClaudeUsageBar
+    /// ~/Library/CloudStorage/GoogleDrive-*/(내 드라이브|My Drive)/App/ClaudeUsageBar
+    /// (예전 위치인 드라이브 바로 아래 ClaudeUsageBar도 함께 확인)
     static func releaseFolder() -> URL? {
         let fm = FileManager.default
         let cloud = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/CloudStorage")
@@ -132,8 +133,10 @@ enum Updater {
             // 폴더명이 NFD로 저장되어 있어 정규화해서 비교
             for drive in (try? fm.contentsOfDirectory(atPath: account.path)) ?? []
             where ["내 드라이브", "My Drive"].contains(drive.precomposedStringWithCanonicalMapping) {
-                let dir = account.appendingPathComponent(drive).appendingPathComponent("ClaudeUsageBar")
-                if fm.fileExists(atPath: dir.appendingPathComponent("latest.json").path) { return dir }
+                for sub in ["App/ClaudeUsageBar", "ClaudeUsageBar"] {
+                    let dir = account.appendingPathComponent(drive).appendingPathComponent(sub)
+                    if fm.fileExists(atPath: dir.appendingPathComponent("latest.json").path) { return dir }
+                }
             }
         }
         return nil

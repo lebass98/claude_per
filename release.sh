@@ -27,7 +27,7 @@ for acc in sorted(os.listdir(root)):
 PY
 )
 [[ -z "$DRIVE" ]] && { echo "❌ 구글 드라이브 동기화 폴더를 찾을 수 없습니다"; exit 1; }
-DEST="$DRIVE/ClaudeUsageBar"
+DEST="$DRIVE/App/ClaudeUsageBar"
 mkdir -p "$DEST"
 
 ZIP="ClaudeUsageBar-${NEW_VERSION}-${NEW_BUILD}.zip"

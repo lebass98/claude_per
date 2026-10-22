@@ -26,7 +26,7 @@
 
 - macOS 13 이상, Swift 툴체인 (Xcode 또는 Command Line Tools)
 - Claude Code 로그인 상태
-- 업데이트 기능: Google Drive for desktop 동기화 (`내 드라이브/ClaudeUsageBar/`)
+- 업데이트 기능: Google Drive for desktop 동기화 (`내 드라이브/App/ClaudeUsageBar/`)
 
 ## 빌드 / 설치
 
@@ -43,7 +43,7 @@
 
 1. `version.env`의 `BUILD`를 1 올리고 버전을 갱신
 2. 앱 빌드 → `ClaudeUsageBar-<버전>-<빌드>.zip` 생성
-3. `내 드라이브/ClaudeUsageBar/`에 zip과 `latest.json` 복사 (zip은 최근 3개만 유지)
+3. `내 드라이브/App/ClaudeUsageBar/`에 zip과 `latest.json` 복사 (zip은 최근 3개만 유지)
 
 앱은 실행 시와 6시간마다(또는 메뉴 › 업데이트 확인) `latest.json`의 `build`를 현재 빌드와 비교한다. 새 버전이면 **⬆ 업데이트 설치**를 누를 때 압축 해제 → 앱 교체 → 재실행한다.
 
@@ -61,6 +61,9 @@
 ## 작업 내역
 
 ### 2026-10-22
+- **v1.2.8 (build 15)**
+  - 구글 드라이브 배포 폴더를 `내 드라이브/ClaudeUsageBar` → `내 드라이브/App/ClaudeUsageBar`로 이전 (`release.sh` 경로 변경)
+  - 앱은 새 위치와 예전 위치를 모두 확인해, 이전 전 버전도 업데이트를 받을 수 있게 함
 - **v1.2.7 (build 14)**
   - "업데이트 확인"을 누르면 결과를 팝업으로 안내 (최신 버전 / 새 버전 → 지금 설치·나중에 / 확인 실패 사유). 기존에는 메뉴 하단 회색 글씨로만 표시돼 메뉴가 닫히면 보이지 않았음
   - 업데이트 설치 실패 시에도 팝업으로 안내
