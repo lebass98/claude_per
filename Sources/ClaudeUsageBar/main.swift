@@ -469,6 +469,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         updateTitle()
         rebuildMenu()
+
+        // 메뉴에서 직접 누른 경우: 메뉴가 닫혀 결과가 안 보이므로 팝업으로 알림
+        guard sender != nil else { return }
+        if let u = pendingUpdate {
+            let notes = u.notes.map { "\n\n\($0)" } ?? ""
+            if alert("새 버전 v\(u.version)이 있습니다.\(notes)",
+                     detail: "현재 v\(Updater.currentVersion) (\(Updater.currentBuild))",
+                     buttons: ["지금 설치", "나중에"]) == .alertFirstButtonReturn {
+                installUpdate()
+            }
+        } else {
+            _ = alert(updateStatus == "최신 버전" ? "최신 버전입니다." : "업데이트를 확인하지 못했습니다.",
+                      detail: updateStatus == "최신 버전"
+                          ? "v\(Updater.currentVersion) (\(Updater.currentBuild))"
+                          : (updateStatus ?? ""),
+                      buttons: ["확인"])
+        }
+    }
+
+    @discardableResult
+    private func alert(_ title: String, detail: String, buttons: [String]) -> NSApplication.ModalResponse {
+        NSApp.activate(ignoringOtherApps: true)  // 메뉴바 전용 앱이라 앞으로 가져와야 팝업이 보임
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = detail
+        buttons.forEach { a.addButton(withTitle: $0) }
+        return a.runModal()
     }
 
     @objc private func installUpdate() {
@@ -478,9 +505,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch let e as UsageError {
             updateStatus = e.message
             rebuildMenu()
+            alert("업데이트 설치 실패", detail: e.message, buttons: ["확인"])
         } catch {
             updateStatus = error.localizedDescription
             rebuildMenu()
+            alert("업데이트 설치 실패", detail: error.localizedDescription, buttons: ["확인"])
         }
     }
 
