@@ -214,6 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         get { DisplayMode(rawValue: defaults.integer(forKey: "mode")) ?? .both }
         set { defaults.set(newValue.rawValue, forKey: "mode") }
     }
+    /// 모델별 주간 한도(Fable 등)를 상태바에 표시할지 (기본 켜짐)
+    private var showModels: Bool {
+        get { defaults.object(forKey: "showModels") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "showModels") }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.button?.title = "Claude …"
@@ -294,6 +299,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if mode != .weekly { add("5h", remaining(usage?.five_hour)) }
         if mode != .fiveHour { add("7d", remaining(usage?.seven_day)) }
+        if showModels {
+            for l in usage?.limits ?? [] where l.kind == "weekly_scoped" {
+                add(l.scope?.model?.display_name ?? "모델", remaining(l.window))
+            }
+        }
         if lastError != nil {
             s.append(NSAttributedString(string: " ⚠", attributes: [.font: font]))
         }
@@ -372,6 +382,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             i.state = m == mode ? .on : .off
             modeMenu.addItem(i)
         }
+        modeMenu.addItem(.separator())
+        let models = NSMenuItem(title: "모델별 주간 한도 (Fable 등)", action: #selector(toggleModels), keyEquivalent: "")
+        models.target = self
+        models.state = showModels ? .on : .off
+        modeMenu.addItem(models)
         modeItem.submenu = modeMenu
         menu.addItem(modeItem)
 
@@ -414,6 +429,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func setMode(_ sender: NSMenuItem) {
         mode = DisplayMode(rawValue: sender.tag) ?? .both
+        updateTitle()
+        rebuildMenu()
+    }
+
+    @objc private func toggleModels() {
+        showModels.toggle()
         updateTitle()
         rebuildMenu()
     }
