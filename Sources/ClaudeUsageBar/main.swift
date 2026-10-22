@@ -39,6 +39,7 @@ struct UsageResponse: Decodable {
 enum UsageError: Error {
     case noCredentials
     case unauthorized
+    case rateLimited(retryAfter: TimeInterval)
     case http(Int)
     case other(String)
 
@@ -46,9 +47,15 @@ enum UsageError: Error {
         switch self {
         case .noCredentials: return "Claude Code 로그인 정보를 찾을 수 없음"
         case .unauthorized: return "토큰 만료 — Claude Code를 한 번 실행하면 갱신됩니다"
+        case .rateLimited: return "요청이 많아 잠시 제한됨(429) — 자동으로 간격을 늘려 재시도"
         case .http(let c): return "HTTP 오류 \(c)"
         case .other(let m): return m
         }
+    }
+
+    var isRateLimited: Bool {
+        if case .rateLimited = self { return true }
+        return false
     }
 }
 
@@ -89,6 +96,10 @@ enum UsageAPI {
         let (data, resp) = try await URLSession.shared.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if code == 401 || code == 403 { throw UsageError.unauthorized }
+        if code == 429 {
+            let after = ((resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "retry-after")).flatMap(Double.init) ?? 0
+            throw UsageError.rateLimited(retryAfter: after)
+        }
         guard code == 200 else { throw UsageError.http(code) }
         return try JSONDecoder().decode(UsageResponse.self, from: data)
     }
@@ -204,10 +215,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateTimer: Timer?
     private var pendingUpdate: ReleaseInfo?
     private var updateStatus: String?
+    // 429 백오프: 이 시각 전에는 요청하지 않음, 연속 실패마다 대기 시간 2배 (최대 10분)
+    private var nextAllowedFetch = Date.distantPast
+    private var backoff: TimeInterval = 0
 
     private let defaults = UserDefaults.standard
     private var interval: TimeInterval {
-        get { let v = defaults.double(forKey: "interval"); return v > 0 ? v : 60 }
+        // 30초 주기는 429를 유발해 최소 1분으로 제한
+        get { max(60, defaults.double(forKey: "interval")) }
         set { defaults.set(newValue, forKey: "interval") }
     }
     private var mode: DisplayMode {
@@ -243,13 +258,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refresh() {
+        guard Date() >= nextAllowedFetch else { return }
         Task { @MainActor in
             do {
                 usage = try await UsageAPI.fetch()
                 lastError = nil
                 lastUpdated = Date()
+                backoff = 0
             } catch let e as UsageError {
                 lastError = e
+                if case .rateLimited(let after) = e {
+                    backoff = min(600, max(60, backoff * 2))
+                    nextAllowedFetch = Date().addingTimeInterval(max(after, backoff))
+                }
             } catch {
                 lastError = .other(error.localizedDescription)
             }
@@ -311,7 +332,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 add(shortName(l.scope?.model?.display_name), remaining(l.window))
             }
         }
-        if lastError != nil {
+        // 429는 일시적이고 직전 값이 그대로 유효하므로 ⚠를 띄우지 않음 (메뉴에만 안내)
+        if let e = lastError, !e.isRateLimited {
             s.append(NSAttributedString(string: " ⚠", attributes: [.font: font]))
         }
         if pendingUpdate != nil {
@@ -400,7 +422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 갱신 주기
         let intItem = NSMenuItem(title: "갱신 주기", action: nil, keyEquivalent: "")
         let intMenu = NSMenu()
-        for (label, sec) in [("30초", 30.0), ("1분", 60.0), ("2분", 120.0), ("5분", 300.0)] {
+        for (label, sec) in [("1분", 60.0), ("2분", 120.0), ("5분", 300.0)] {
             let i = NSMenuItem(title: label, action: #selector(setInterval(_:)), keyEquivalent: "")
             i.target = self
             i.representedObject = sec
