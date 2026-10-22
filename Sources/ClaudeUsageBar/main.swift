@@ -57,12 +57,33 @@ enum UsageError: Error {
         if case .rateLimited = self { return true }
         return false
     }
+
+    var isLoginProblem: Bool {
+        switch self {
+        case .noCredentials, .unauthorized: return true
+        default: return false
+        }
+    }
 }
 
 // MARK: - 자격증명 (macOS 키체인의 Claude Code 토큰 사용)
 
 enum Credentials {
     static func accessToken() throws -> String {
+        guard let token = try oauth()["accessToken"] as? String else { throw UsageError.noCredentials }
+        return token
+    }
+
+    /// 키체인 로그인 정보의 요금제 표시용 이름 (예: Max 20x, Pro)
+    static func planName() -> String? {
+        guard let o = try? oauth() else { return nil }
+        let tier = o["rateLimitTier"] as? String ?? ""
+        if tier.contains("max_20x") { return "Max 20x" }
+        if tier.contains("max_5x") { return "Max 5x" }
+        return (o["subscriptionType"] as? String)?.capitalized
+    }
+
+    private static func oauth() throws -> [String: Any] {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         p.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
@@ -75,19 +96,36 @@ enum Credentials {
         let data = out.fileHandleForReading.readDataToEndOfFile()
         guard
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let oauth = json["claudeAiOauth"] as? [String: Any],
-            let token = oauth["accessToken"] as? String
+            let oauth = json["claudeAiOauth"] as? [String: Any]
         else { throw UsageError.noCredentials }
-        return token
+        return oauth
     }
+}
+
+struct Profile: Decodable {
+    struct Account: Decodable {
+        let display_name: String?
+        let email: String?
+    }
+    let account: Account
 }
 
 // MARK: - API
 
 enum UsageAPI {
     static let url = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+    static let profileURL = URL(string: "https://api.anthropic.com/api/oauth/profile")!
+
+    /// 로그인된 계정 정보 (이름·이메일)
+    static func profile() async throws -> Profile {
+        try await get(profileURL)
+    }
 
     static func fetch() async throws -> UsageResponse {
+        try await get(url)
+    }
+
+    private static func get<T: Decodable>(_ url: URL) async throws -> T {
         let token = try Credentials.accessToken()
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -101,7 +139,7 @@ enum UsageAPI {
             throw UsageError.rateLimited(retryAfter: after)
         }
         guard code == 200 else { throw UsageError.http(code) }
-        return try JSONDecoder().decode(UsageResponse.self, from: data)
+        return try JSONDecoder().decode(T.self, from: data)
     }
 }
 
@@ -217,6 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastUpdated: Date?
     private var updateTimer: Timer?
     private var pendingUpdate: ReleaseInfo?
+    private var profile: Profile?
     private var updateStatus: String?
     // 429 백오프: 이 시각 전에는 요청하지 않음, 연속 실패마다 대기 시간 2배 (최대 10분)
     private var nextAllowedFetch = Date.distantPast
@@ -244,8 +283,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refresh()
         scheduleTimer()
         checkForUpdates(nil)
+        checkLogin(nil)
         updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             self?.checkForUpdates(nil)
+            self?.checkLogin(nil)
         }
         // 잠자기에서 깨어나면 즉시 갱신
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -369,6 +410,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func rebuildMenu() {
         let menu = NSMenu()
 
+        // 로그인 상태
+        switch lastError {
+        case .noCredentials?:
+            menu.addItem(info("⚠ 로그인 안 됨"))
+            menu.addItem(info("   터미널에서 claude 실행 후 /login"))
+        case .unauthorized?:
+            menu.addItem(info("⚠ 로그인 만료"))
+            menu.addItem(info("   Claude Code를 한 번 실행하면 갱신됩니다"))
+        default:
+            if let a = profile?.account {
+                let name = a.display_name ?? a.email ?? "로그인됨"
+                let plan = Credentials.planName().map { " · \($0)" } ?? ""
+                menu.addItem(info("✓ \(name)\(plan)"))
+                if let email = a.email, email != name { menu.addItem(info("   \(email)")) }
+            }
+        }
+        let loginCheck = NSMenuItem(title: "로그인 확인", action: #selector(checkLogin(_:)), keyEquivalent: "l")
+        loginCheck.target = self
+        menu.addItem(loginCheck)
+        menu.addItem(.separator())
+
         for line in resetLines() { menu.addItem(info(line)) }
         if menu.numberOfItems > 0 { menu.addItem(.separator()) }
 
@@ -488,6 +550,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           ? "v\(Updater.currentVersion) (\(Updater.currentBuild))"
                           : (updateStatus ?? ""),
                       buttons: ["확인"])
+        }
+    }
+
+    /// 로그인 상태 확인 (sender가 nil이면 조용히, 메뉴에서 누르면 팝업으로 결과 안내)
+    @objc private func checkLogin(_ sender: Any?) {
+        Task { @MainActor in
+            var failure: UsageError?
+            do {
+                profile = try await UsageAPI.profile()
+                // 로그인 문제였다면 해소됐으니 사용량도 바로 다시 가져옴
+                if lastError?.isLoginProblem == true {
+                    lastError = nil
+                    refresh()
+                }
+            } catch let e as UsageError {
+                failure = e
+                if case .rateLimited = e {} else { profile = nil; lastError = e }
+            } catch {
+                failure = .other(error.localizedDescription)
+            }
+            updateTitle()
+            rebuildMenu()
+
+            guard sender != nil else { return }
+            if let a = profile?.account, failure == nil {
+                let plan = Credentials.planName().map { "\n요금제: \($0)" } ?? ""
+                alert("로그인되어 있습니다.",
+                      detail: "\(a.display_name ?? "")\n\(a.email ?? "")\(plan)",
+                      buttons: ["확인"])
+            } else {
+                switch failure {
+                case .noCredentials?:
+                    alert("로그인되어 있지 않습니다.",
+                          detail: "터미널에서 claude를 실행한 뒤 /login으로 로그인해 주세요.", buttons: ["확인"])
+                case .unauthorized?:
+                    alert("로그인이 만료되었습니다.",
+                          detail: "Claude Code를 한 번 실행하면 자동으로 갱신됩니다.\n갱신되지 않으면 /login으로 다시 로그인해 주세요.",
+                          buttons: ["확인"])
+                default:
+                    alert("로그인 상태를 확인하지 못했습니다.", detail: failure?.message ?? "", buttons: ["확인"])
+                }
+            }
         }
     }
 
