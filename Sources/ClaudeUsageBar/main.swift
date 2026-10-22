@@ -306,8 +306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return known[name] ?? String(name.prefix(2))
     }
 
-    /// 마우스 오버 툴팁: 한도별 초기화 날짜·시간만
-    private func resetTooltip() -> String? {
+    /// 한도별 초기화 날짜·시간 (메뉴 상단에 표시; 상태바 툴팁은 메뉴가 붙어 있어 뜨지 않음)
+    private func resetLines() -> [String] {
         var rows: [(String, UsageWindow?)] = [("5h", usage?.five_hour), ("7d", usage?.seven_day)]
         for l in usage?.limits ?? [] where l.kind == "weekly_scoped" {
             rows.append((shortName(l.scope?.model?.display_name), l.window))
@@ -315,8 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let f = DateFormatter()
         f.locale = Locale(identifier: "ko_KR")
         f.dateFormat = "M/d(E) HH:mm"
-        let lines = rows.compactMap { tag, w in w?.resetDate.map { "\(tag)  \(f.string(from: $0))" } }
-        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+        return rows.compactMap { tag, w in w?.resetDate.map { "\(tag)  \(f.string(from: $0)) 초기화" } }
     }
 
     private func updateTitle() {
@@ -354,7 +353,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             s.append(NSAttributedString(string: " ↑", attributes: [.font: font, .foregroundColor: NSColor.systemBlue]))
         }
         button.attributedTitle = s
-        button.toolTip = resetTooltip()
     }
 
     // MARK: 메뉴
@@ -367,6 +365,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+
+        for line in resetLines() { menu.addItem(info(line)) }
+        if menu.numberOfItems > 0 { menu.addItem(.separator()) }
 
         if let e = lastError {
             menu.addItem(info("⚠ \(e.message)"))
