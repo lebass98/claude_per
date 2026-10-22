@@ -309,7 +309,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateTitle() {
         guard let button = statusItem.button else { return }
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        let label = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        // 기간 라벨은 숫자(12pt)의 절반 크기
+        let label = NSFont.systemFont(ofSize: 6, weight: .semibold)
 
         if usage == nil, lastError != nil {
             button.attributedTitle = NSAttributedString(
