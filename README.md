@@ -68,6 +68,8 @@
   - Antigravity 로그인 파일(`~/.gemini/jetski-standalone-oauth-token`)의 토큰은 1시간마다 만료되고, Antigravity IDE·`agy`를 실행해도 이 파일은 갱신되지 않음
   - `agy` 안의 OAuth 클라이언트 후보 3개 × 시크릿 2개 + 시크릿 없음 조합으로 `refresh_token` 갱신을 시도했으나 모두 `401 invalid_client`
   - Antigravity 내부 인증 구조에 의존하면 업데이트마다 깨질 수 있어 Gemini 표시는 보류 (로고·색상 `#4285F4`는 코드에 준비됨)
+  - 공식 Gemini CLI(`@google/gemini-cli` 0.66.0) 브라우저 로그인도 시도: 로그인은 성공했으나 개인 무료 등급은 `UNSUPPORTED_CLIENT`("Antigravity로 이전하라"), 표준 등급은 Google Cloud 프로젝트(기업 라이선스) 필요 → 할당량 조회 `403 SUBSCRIPTION_REQUIRED`
+  - Gemini 앱(gemini.google.com)은 남은 사용량을 숫자로 제공하지 않음 → 개인 계정으로는 Gemini 할당량을 가져올 공식 경로가 현재 없음
 - **v1.4.3 (build 21)**
   - 그룹 배경을 서비스 색 85%로 진하게, 그 위의 로고·라벨·숫자는 모두 흰색 (다크·라이트 미리보기로 확인)
   - 남은 비율 10% 이하는 빨간 글씨 대신 숫자 뒤에 빨간 배경
