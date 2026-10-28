@@ -64,6 +64,11 @@
 ## 작업 내역
 
 ### 2026-10-28
+- **v1.4.1 (build 19)**
+  - 메뉴바 표시를 2줄 배치로 변경: 기간 라벨(5h/7d/Fb)을 숫자 **위에** 작게 표시 (이미지로 그려 다크/라이트 모드 자동 대응)
+  - 서비스 묶음 앞에 구분 로고 추가: Claude 주황 불꽃, ChatGPT 초록 육각형 (Gemini 파랑 별 준비). 공식 이미지가 아닌 코드로 그린 단순 도형
+  - Claude 정보를 못 가져오면 Claude 로고 뒤에 `⚠` 표시
+  - Gemini(Antigravity) 조사: 할당량 API(`daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`)는 확인했으나, `~/.gemini/jetski-standalone-oauth-token`이 갱신되지 않아(만료 토큰) 아직 미적용
 - **v1.4.0 (build 18)**
   - ChatGPT 사용량 추가: Codex CLI 로그인(`~/.codex/auth.json`)으로 `chatgpt.com/backend-api/wham/usage` 조회 → 5시간·주간 남은 비율 표시
   - 서비스별 숫자 색상 구분: Claude `#D97757`, ChatGPT `#10A37F` (Gemini는 `#4285F4` 예정). 남은 비율 10% 이하는 빨강 (기존 30% 이하 주황 규칙은 서비스 색과 겹쳐 제거)
