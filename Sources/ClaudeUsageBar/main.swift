@@ -345,6 +345,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { defaults.set(newValue, forKey: "showModels") }
     }
     /// ChatGPT(Codex) 사용량을 상태바에 표시할지 (Codex 로그인이 있으면 기본 켜짐)
+    /// 압축 표시 (메뉴바 공간이 부족해 아이콘이 밀려나지 않도록 기본 켜짐)
+    private var compact: Bool {
+        get { defaults.object(forKey: "compact") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "compact") }
+    }
     private var showGPT: Bool {
         get { defaults.object(forKey: "showGPT") as? Bool ?? ChatGPTAPI.isInstalled }
         set { defaults.set(newValue, forKey: "showGPT") }
@@ -463,14 +468,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var low = false        // 남은 비율 10% 이하 → 숫자 뒤에 빨간 배경
     }
 
+    /// 상태바 크기·간격 (압축 표시는 % 기호를 빼고 글자·로고·간격을 줄임)
+    struct BarLayout {
+        var number: CGFloat, label: CGFloat, logo: CGFloat
+        var itemGap: CGFloat, logoGap: CGFloat, groupGap: CGFloat, pad: CGFloat
+        var percent: Bool
+
+        static let regular = BarLayout(number: 11, label: 7.5, logo: 11,
+                                       itemGap: 7, logoGap: 4, groupGap: 14, pad: 4, percent: true)
+        static let compact = BarLayout(number: 10, label: 6.5, logo: 9,
+                                       itemGap: 4, logoGap: 3, groupGap: 8, pad: 3, percent: false)
+    }
+
     /// 서비스 구분용 로고 모양 (공식 이미지 대신 코드로 그린 단순 도형)
     enum Logo {
         case claude, chatGPT, gemini
 
-        static let size: CGFloat = 11
-
-        func draw(at origin: NSPoint, color: NSColor) {
-            let r = Logo.size / 2
+        func draw(at origin: NSPoint, size: CGFloat, color: NSColor) {
+            let r = size / 2
             let c = NSPoint(x: origin.x + r, y: origin.y + r)
             color.set()
             switch self {
@@ -517,25 +532,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
 
         let claudeMissing = usage == nil && lastError != nil
+        let layout = compact ? BarLayout.compact : BarLayout.regular
         var segs: [Segment] = []
-        // 다음 숫자 칸 앞 간격: 로고 바로 뒤는 좁게, 그 외 7
-        var nextGap: CGFloat = 7
+        // 다음 숫자 칸 앞 간격: 로고 바로 뒤는 좁게
+        var nextGap = layout.itemGap
         var group = -1
         func add(_ tag: String, _ p: Int?, _ service: NSColor) {
-            segs.append(Segment(label: tag, text: p.map { "\($0)%" } ?? "–",
+            segs.append(Segment(label: tag, text: p.map { layout.percent ? "\($0)%" : "\($0)" } ?? "–",
                                 color: service, gap: segs.isEmpty ? 0 : nextGap, group: group,
                                 low: (p ?? 100) <= 10))
-            nextGap = 7
+            nextGap = layout.itemGap
         }
         func logo(_ l: Logo, _ service: NSColor) {
             group += 1
-            segs.append(Segment(label: nil, text: "", color: service, gap: segs.isEmpty ? 0 : 14, logo: l, group: group))
-            nextGap = 4
+            segs.append(Segment(label: nil, text: "", color: service, gap: segs.isEmpty ? 0 : layout.groupGap,
+                                logo: l, group: group))
+            nextGap = layout.logoGap
         }
         // Claude
         logo(.claude, ServiceColor.claude)
         if claudeMissing {
-            segs.append(Segment(label: nil, text: "⚠", color: ServiceColor.claude, gap: 4, group: group))
+            segs.append(Segment(label: nil, text: "⚠", color: ServiceColor.claude, gap: layout.logoGap, group: group))
         } else {
             if mode != .weekly { add("5h", remaining(usage?.five_hour), ServiceColor.claude) }
             if mode != .fiveHour { add("7d", remaining(usage?.seven_day), ServiceColor.claude) }
@@ -547,7 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Claude 오류 ⚠는 Claude 묶음 안에 (429는 일시적이고 직전 값이 유효하므로 띄우지 않음)
         if !claudeMissing, let e = lastError, !e.isRateLimited {
-            segs.append(Segment(label: nil, text: "⚠", color: ServiceColor.claude, gap: 4, group: group))
+            segs.append(Segment(label: nil, text: "⚠", color: ServiceColor.claude, gap: layout.logoGap, group: group))
         }
         // ChatGPT
         if showGPT, let gpt {
@@ -562,23 +579,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         button.attributedTitle = NSAttributedString(string: "")
         button.title = ""
-        button.image = stackedImage(segs)
+        button.image = stackedImage(segs, layout)
         button.imagePosition = .imageOnly
     }
 
     /// 라벨을 숫자 위에 쌓아 그린 상태바 이미지 (그리는 시점의 다크/라이트 모드 색을 따름)
-    private func stackedImage(_ segs: [Segment]) -> NSImage {
-        let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
-        let labelFont = NSFont.systemFont(ofSize: 7.5, weight: .medium)
+    private func stackedImage(_ segs: [Segment], _ layout: BarLayout) -> NSImage {
+        let numberFont = NSFont.monospacedDigitSystemFont(ofSize: layout.number, weight: .semibold)
+        let labelFont = NSFont.systemFont(ofSize: layout.label, weight: .medium)
         let height = NSStatusBar.system.thickness
 
         func size(_ s: String, _ f: NSFont) -> NSSize { (s as NSString).size(withAttributes: [.font: f]) }
         let widths = segs.map { seg in
-            seg.logo != nil ? Logo.size
+            seg.logo != nil ? layout.logo
                 : ceil(max(size(seg.text, numberFont).width, seg.label.map { size($0, labelFont).width } ?? 0))
         }
         // 묶음 배경이 잘리지 않게 양 끝 여백
-        let pad: CGFloat = 4
+        let pad = layout.pad
         let total = zip(segs, widths).reduce(0) { $0 + $1.0.gap + $1.1 } + pad * 2
 
         return NSImage(size: NSSize(width: max(total, 1), height: height), flipped: false) { _ in
@@ -607,7 +624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let num = size(seg.text, numberFont)
                 let ink: NSColor = seg.group != nil ? .white : seg.color
                 if let logo = seg.logo {
-                    logo.draw(at: NSPoint(x: x, y: (height - Logo.size) / 2), color: ink)
+                    logo.draw(at: NSPoint(x: x, y: (height - layout.logo) / 2), size: layout.logo, color: ink)
                 } else if let label = seg.label {
                     // 아래: 숫자, 위: 라벨
                     let lab = size(label, labelFont)
@@ -715,6 +732,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         gptItem.target = self
         gptItem.state = showGPT ? .on : .off
         modeMenu.addItem(gptItem)
+        modeMenu.addItem(.separator())
+        let compactItem = NSMenuItem(title: "압축 표시 (폭 줄이기)", action: #selector(toggleCompact), keyEquivalent: "")
+        compactItem.target = self
+        compactItem.state = compact ? .on : .off
+        modeMenu.addItem(compactItem)
         modeItem.submenu = modeMenu
         menu.addItem(modeItem)
 
@@ -763,6 +785,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleModels() {
         showModels.toggle()
+        updateTitle()
+        rebuildMenu()
+    }
+
+    @objc private func toggleCompact() {
+        compact.toggle()
         updateTitle()
         rebuildMenu()
     }
