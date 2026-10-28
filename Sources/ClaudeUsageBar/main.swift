@@ -472,12 +472,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     struct BarLayout {
         var number: CGFloat, label: CGFloat, logo: CGFloat
         var itemGap: CGFloat, logoGap: CGFloat, groupGap: CGFloat, pad: CGFloat
+        var lineGap: CGFloat  // 라벨과 숫자 사이 세로 간격
         var percent: Bool
 
         static let regular = BarLayout(number: 11, label: 7.5, logo: 11,
-                                       itemGap: 7, logoGap: 4, groupGap: 14, pad: 4, percent: true)
+                                       itemGap: 7, logoGap: 4, groupGap: 14, pad: 4, lineGap: 2, percent: true)
         static let compact = BarLayout(number: 10, label: 6.5, logo: 9,
-                                       itemGap: 4, logoGap: 3, groupGap: 8, pad: 3, percent: false)
+                                       itemGap: 4, logoGap: 3, groupGap: 8, pad: 3, lineGap: 1.5, percent: false)
     }
 
     /// 서비스 구분용 로고 모양 (공식 이미지 대신 코드로 그린 단순 도형)
@@ -626,16 +627,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let logo = seg.logo {
                     logo.draw(at: NSPoint(x: x, y: (height - layout.logo) / 2), size: layout.logo, color: ink)
                 } else if let label = seg.label {
-                    // 아래: 숫자, 위: 라벨
+                    // 아래: 숫자, 위: 라벨. 글꼴 상자 대신 실제 글자 높이(capHeight)로 붙여 쌓고 세로 가운데 정렬
                     let lab = size(label, labelFont)
+                    let stack = numberFont.capHeight + layout.lineGap + labelFont.capHeight
+                    let numBase = ((height - stack) / 2).rounded()
+                    let labBase = numBase + numberFont.capHeight + layout.lineGap
                     if seg.low {
                         NSColor.systemRed.setFill()
-                        NSBezierPath(roundedRect: NSRect(x: x - 2, y: 1.5, width: w + 4, height: num.height - 1),
+                        // 위쪽 여백은 줄 간격보다 작게 해서 라벨과 겹치지 않게
+                        NSBezierPath(roundedRect: NSRect(x: x - 2, y: numBase - 1.5, width: w + 4,
+                                                         height: numberFont.capHeight + 1.5 + layout.lineGap * 0.5),
                                      xRadius: 3, yRadius: 3).fill()
                     }
-                    (seg.text as NSString).draw(at: NSPoint(x: x + (w - num.width) / 2, y: 1),
+                    (seg.text as NSString).draw(at: NSPoint(x: x + (w - num.width) / 2, y: numBase + numberFont.descender),
                                                 withAttributes: [.font: numberFont, .foregroundColor: ink])
-                    (label as NSString).draw(at: NSPoint(x: x + (w - lab.width) / 2, y: height - lab.height),
+                    (label as NSString).draw(at: NSPoint(x: x + (w - lab.width) / 2, y: labBase + labelFont.descender),
                                              withAttributes: [.font: labelFont, .foregroundColor: ink.withAlphaComponent(0.85)])
                 } else {
                     (seg.text as NSString).draw(at: NSPoint(x: x + (w - num.width) / 2, y: (height - num.height) / 2),
