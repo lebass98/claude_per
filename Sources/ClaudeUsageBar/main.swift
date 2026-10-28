@@ -351,6 +351,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 예전 30초 설정이 남아 있으면 지워서 기본 1분으로 (Claude·ChatGPT 모두 같은 주기로 갱신)
+        if defaults.object(forKey: "interval") != nil, defaults.double(forKey: "interval") < 60 {
+            defaults.removeObject(forKey: "interval")
+        }
         statusItem.button?.title = "Claude …"
         rebuildMenu()
         refresh()
@@ -426,12 +430,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pct(w).map { max(0, 100 - $0) }
     }
 
-    /// 숫자 색: 서비스 고유 색, 남은 비율 10% 이하는 빨강
-    private func color(_ service: NSColor, remaining r: Int?) -> NSColor {
-        guard let r else { return .secondaryLabelColor }
-        return r <= 10 ? .systemRed : service
-    }
-
     /// 상태바용 짧은 모델 라벨 (Fable → Fb, 그 외는 앞 두 글자)
     private func shortName(_ name: String?) -> String {
         guard let name, !name.isEmpty else { return "M" }
@@ -462,6 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var gap: CGFloat  // 앞 칸과의 간격
         var logo: Logo? = nil
         var group: Int? = nil  // 같은 서비스 묶음 (배경을 함께 칠함)
+        var low = false        // 남은 비율 10% 이하 → 숫자 뒤에 빨간 배경
     }
 
     /// 서비스 구분용 로고 모양 (공식 이미지 대신 코드로 그린 단순 도형)
@@ -524,7 +523,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var group = -1
         func add(_ tag: String, _ p: Int?, _ service: NSColor) {
             segs.append(Segment(label: tag, text: p.map { "\($0)%" } ?? "–",
-                                color: color(service, remaining: p), gap: segs.isEmpty ? 0 : nextGap, group: group))
+                                color: service, gap: segs.isEmpty ? 0 : nextGap, group: group,
+                                low: (p ?? 100) <= 10))
             nextGap = 7
         }
         func logo(_ l: Logo, _ service: NSColor) {
@@ -545,16 +545,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 add(shortName(l.scope?.model?.display_name), remaining(l.window), ServiceColor.claude)
             }
         }
+        // Claude 오류 ⚠는 Claude 묶음 안에 (429는 일시적이고 직전 값이 유효하므로 띄우지 않음)
+        if !claudeMissing, let e = lastError, !e.isRateLimited {
+            segs.append(Segment(label: nil, text: "⚠", color: ServiceColor.claude, gap: 4, group: group))
+        }
         // ChatGPT
         if showGPT, let gpt {
             logo(.chatGPT, ServiceColor.chatGPT)
             if mode != .weekly { add("5h", remaining(gpt.fiveHour), ServiceColor.chatGPT) }
             if mode != .fiveHour { add("7d", remaining(gpt.weekly), ServiceColor.chatGPT) }
         }
-        // 429는 일시적이고 직전 값이 그대로 유효하므로 ⚠를 띄우지 않음 (메뉴에만 안내)
-        if !claudeMissing, let e = lastError, !e.isRateLimited {
-            segs.append(Segment(label: nil, text: "⚠", color: .labelColor, gap: 5))
-        }
+        // 업데이트 표시는 모든 묶음 뒤에만
         if pendingUpdate != nil {
             segs.append(Segment(label: nil, text: "↑", color: .systemBlue, gap: 5))
         }
@@ -594,24 +595,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             for span in spans.values {
                 let rect = NSRect(x: span.from - pad, y: 1, width: span.to - span.from + pad * 2, height: height - 2)
-                span.color.withAlphaComponent(0.22).setFill()
+                // 흰 글씨가 다크·라이트 메뉴바 모두에서 읽히도록 진하게
+                span.color.withAlphaComponent(0.85).setFill()
                 NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
             }
 
-            // 2) 로고·라벨·숫자
+            // 2) 로고·라벨·숫자 (배경 안은 모두 흰색)
             var x = pad
             for (seg, w) in zip(segs, widths) {
                 x += seg.gap
                 let num = size(seg.text, numberFont)
+                let ink: NSColor = seg.group != nil ? .white : seg.color
                 if let logo = seg.logo {
-                    logo.draw(at: NSPoint(x: x, y: (height - Logo.size) / 2), color: seg.color)
+                    logo.draw(at: NSPoint(x: x, y: (height - Logo.size) / 2), color: ink)
                 } else if let label = seg.label {
-                    // 아래: 숫자, 위: 라벨 (라벨은 기본 글자색 = 다크 메뉴바에서 흰색)
+                    // 아래: 숫자, 위: 라벨
                     let lab = size(label, labelFont)
+                    if seg.low {
+                        NSColor.systemRed.setFill()
+                        NSBezierPath(roundedRect: NSRect(x: x - 2, y: 1.5, width: w + 4, height: num.height - 1),
+                                     xRadius: 3, yRadius: 3).fill()
+                    }
                     (seg.text as NSString).draw(at: NSPoint(x: x + (w - num.width) / 2, y: 1),
-                                                withAttributes: [.font: numberFont, .foregroundColor: seg.color])
+                                                withAttributes: [.font: numberFont, .foregroundColor: ink])
                     (label as NSString).draw(at: NSPoint(x: x + (w - lab.width) / 2, y: height - lab.height),
-                                             withAttributes: [.font: labelFont, .foregroundColor: NSColor.labelColor])
+                                             withAttributes: [.font: labelFont, .foregroundColor: ink.withAlphaComponent(0.85)])
                 } else {
                     (seg.text as NSString).draw(at: NSPoint(x: x + (w - num.width) / 2, y: (height - num.height) / 2),
                                                 withAttributes: [.font: numberFont, .foregroundColor: seg.color])
