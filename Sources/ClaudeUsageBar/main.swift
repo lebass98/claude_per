@@ -461,6 +461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var color: NSColor
         var gap: CGFloat  // 앞 칸과의 간격
         var logo: Logo? = nil
+        var group: Int? = nil  // 같은 서비스 묶음 (배경을 함께 칠함)
     }
 
     /// 서비스 구분용 로고 모양 (공식 이미지 대신 코드로 그린 단순 도형)
@@ -520,19 +521,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var segs: [Segment] = []
         // 다음 숫자 칸 앞 간격: 로고 바로 뒤는 좁게, 그 외 7
         var nextGap: CGFloat = 7
+        var group = -1
         func add(_ tag: String, _ p: Int?, _ service: NSColor) {
             segs.append(Segment(label: tag, text: p.map { "\($0)%" } ?? "–",
-                                color: color(service, remaining: p), gap: segs.isEmpty ? 0 : nextGap))
+                                color: color(service, remaining: p), gap: segs.isEmpty ? 0 : nextGap, group: group))
             nextGap = 7
         }
         func logo(_ l: Logo, _ service: NSColor) {
-            segs.append(Segment(label: nil, text: "", color: service, gap: segs.isEmpty ? 0 : 12, logo: l))
-            nextGap = 3
+            group += 1
+            segs.append(Segment(label: nil, text: "", color: service, gap: segs.isEmpty ? 0 : 14, logo: l, group: group))
+            nextGap = 4
         }
         // Claude
         logo(.claude, ServiceColor.claude)
         if claudeMissing {
-            segs.append(Segment(label: nil, text: "⚠", color: ServiceColor.claude, gap: 3))
+            segs.append(Segment(label: nil, text: "⚠", color: ServiceColor.claude, gap: 4, group: group))
         } else {
             if mode != .weekly { add("5h", remaining(usage?.five_hour), ServiceColor.claude) }
             if mode != .fiveHour { add("7d", remaining(usage?.seven_day), ServiceColor.claude) }
@@ -573,10 +576,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seg.logo != nil ? Logo.size
                 : ceil(max(size(seg.text, numberFont).width, seg.label.map { size($0, labelFont).width } ?? 0))
         }
-        let total = zip(segs, widths).reduce(0) { $0 + $1.0.gap + $1.1 }
+        // 묶음 배경이 잘리지 않게 양 끝 여백
+        let pad: CGFloat = 4
+        let total = zip(segs, widths).reduce(0) { $0 + $1.0.gap + $1.1 } + pad * 2
 
         return NSImage(size: NSSize(width: max(total, 1), height: height), flipped: false) { _ in
-            var x: CGFloat = 0
+            // 1) 서비스 묶음 배경: 로고 색을 옅게 깐 둥근 사각형
+            var bx = pad
+            var spans: [Int: (from: CGFloat, to: CGFloat, color: NSColor)] = [:]
+            for (seg, w) in zip(segs, widths) {
+                bx += seg.gap
+                if let g = seg.group {
+                    let c = seg.logo != nil ? seg.color : spans[g]?.color ?? seg.color
+                    spans[g] = (spans[g]?.from ?? bx, bx + w, c)
+                }
+                bx += w
+            }
+            for span in spans.values {
+                let rect = NSRect(x: span.from - pad, y: 1, width: span.to - span.from + pad * 2, height: height - 2)
+                span.color.withAlphaComponent(0.22).setFill()
+                NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
+            }
+
+            // 2) 로고·라벨·숫자
+            var x = pad
             for (seg, w) in zip(segs, widths) {
                 x += seg.gap
                 let num = size(seg.text, numberFont)
