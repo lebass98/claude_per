@@ -143,6 +143,71 @@ enum UsageAPI {
     }
 }
 
+// MARK: - ChatGPT (Codex CLI 로그인 정보로 사용량 조회)
+
+struct ChatGPTUsage: Decodable {
+    struct Window: Decodable {
+        let used_percent: Double?
+        let reset_at: Double?
+
+        var window: UsageWindow {
+            UsageWindow(utilization: used_percent,
+                        resets_at: reset_at.map { ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: $0)) })
+        }
+    }
+    struct RateLimit: Decodable {
+        let primary_window: Window?    // 5시간
+        let secondary_window: Window?  // 주간
+    }
+    let plan_type: String?
+    let rate_limit: RateLimit?
+
+    var fiveHour: UsageWindow? { rate_limit?.primary_window?.window }
+    var weekly: UsageWindow? { rate_limit?.secondary_window?.window }
+    var planName: String? { plan_type.map { "ChatGPT \($0.capitalized)" } }
+}
+
+enum ChatGPTAPI {
+    static let url = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+
+    /// Codex CLI가 저장한 로그인 정보 (~/.codex/auth.json)
+    static var authFile: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/auth.json")
+    }
+
+    static var isInstalled: Bool { FileManager.default.fileExists(atPath: authFile.path) }
+
+    static func fetch() async throws -> ChatGPTUsage {
+        guard
+            let data = try? Data(contentsOf: authFile),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let tokens = json["tokens"] as? [String: Any],
+            let token = tokens["access_token"] as? String
+        else { throw UsageError.noCredentials }
+
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let account = tokens["account_id"] as? String {
+            req.setValue(account, forHTTPHeaderField: "ChatGPT-Account-Id")
+        }
+        req.setValue("codex_cli_rs", forHTTPHeaderField: "User-Agent")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (body, resp) = try await URLSession.shared.data(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 401 || code == 403 { throw UsageError.unauthorized }
+        if code == 429 { throw UsageError.rateLimited(retryAfter: 0) }
+        guard code == 200 else { throw UsageError.http(code) }
+        return try JSONDecoder().decode(ChatGPTUsage.self, from: body)
+    }
+}
+
+/// 서비스별 구분 색상
+enum ServiceColor {
+    static let claude = NSColor(srgbRed: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0, alpha: 1)
+    static let chatGPT = NSColor(srgbRed: 0x10 / 255.0, green: 0xA3 / 255.0, blue: 0x7F / 255.0, alpha: 1)
+    static let gemini = NSColor(srgbRed: 0x42 / 255.0, green: 0x85 / 255.0, blue: 0xF4 / 255.0, alpha: 1)
+}
+
 // MARK: - 업데이트 (구글 드라이브 동기화 폴더의 latest.json 확인)
 
 struct ReleaseInfo: Decodable {
@@ -257,6 +322,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingUpdate: ReleaseInfo?
     private var profile: Profile?
     private var loginProcess: Process?
+    private var gpt: ChatGPTUsage?
+    private var gptError: UsageError?
     private var updateStatus: String?
     // 429 백오프: 이 시각 전에는 요청하지 않음, 연속 실패마다 대기 시간 2배 (최대 10분)
     private var nextAllowedFetch = Date.distantPast
@@ -276,6 +343,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var showModels: Bool {
         get { defaults.object(forKey: "showModels") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "showModels") }
+    }
+    /// ChatGPT(Codex) 사용량을 상태바에 표시할지 (Codex 로그인이 있으면 기본 켜짐)
+    private var showGPT: Bool {
+        get { defaults.object(forKey: "showGPT") as? Bool ?? ChatGPTAPI.isInstalled }
+        set { defaults.set(newValue, forKey: "showGPT") }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -303,6 +375,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refresh() {
+        refreshGPT()
         guard Date() >= nextAllowedFetch else { return }
         Task { @MainActor in
             do {
@@ -324,6 +397,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// ChatGPT 사용량 (Claude와 별개로 실패해도 Claude 표시는 그대로)
+    private func refreshGPT() {
+        guard showGPT, ChatGPTAPI.isInstalled else { return }
+        Task { @MainActor in
+            do {
+                gpt = try await ChatGPTAPI.fetch()
+                gptError = nil
+            } catch let e as UsageError {
+                gptError = e
+            } catch {
+                gptError = .other(error.localizedDescription)
+            }
+            updateTitle()
+            rebuildMenu()
+        }
+    }
+
     // MARK: 상태바 텍스트
 
     private func pct(_ w: UsageWindow?) -> Int? {
@@ -336,12 +426,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pct(w).map { max(0, 100 - $0) }
     }
 
-    private func color(forRemaining r: Int) -> NSColor {
-        switch r {
-        case ..<11: return .systemRed
-        case 11..<31: return .systemOrange
-        default: return .labelColor
-        }
+    /// 숫자 색: 서비스 고유 색, 남은 비율 10% 이하는 빨강
+    private func color(_ service: NSColor, remaining r: Int?) -> NSColor {
+        guard let r else { return .secondaryLabelColor }
+        return r <= 10 ? .systemRed : service
     }
 
     /// 상태바용 짧은 모델 라벨 (Fable → Fb, 그 외는 앞 두 글자)
@@ -353,9 +441,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 한도별 초기화 날짜·시간 (메뉴 상단에 표시; 상태바 툴팁은 메뉴가 붙어 있어 뜨지 않음)
     private func resetLines() -> [String] {
-        var rows: [(String, UsageWindow?)] = [("5h", usage?.five_hour), ("7d", usage?.seven_day)]
+        var rows: [(String, UsageWindow?)] = [("Claude 5h", usage?.five_hour), ("Claude 7d", usage?.seven_day)]
         for l in usage?.limits ?? [] where l.kind == "weekly_scoped" {
-            rows.append((shortName(l.scope?.model?.display_name), l.window))
+            rows.append(("Claude \(shortName(l.scope?.model?.display_name))", l.window))
+        }
+        if showGPT, let gpt {
+            rows += [("GPT 5h", gpt.fiveHour), ("GPT 7d", gpt.weekly)]
         }
         let f = DateFormatter()
         f.locale = Locale(identifier: "ko_KR")
@@ -369,29 +460,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 기간 라벨은 숫자(12pt)의 절반 크기
         let label = NSFont.systemFont(ofSize: 6, weight: .semibold)
 
-        if usage == nil, lastError != nil {
-            button.attributedTitle = NSAttributedString(
-                string: "Claude ⚠", attributes: [.font: font])
-            return
-        }
-
+        let claudeMissing = usage == nil && lastError != nil
         let s = NSMutableAttributedString()
-        func add(_ tag: String, _ p: Int?) {
+        func add(_ tag: String, _ p: Int?, _ service: NSColor) {
             if s.length > 0 { s.append(NSAttributedString(string: "  ", attributes: [.font: font])) }
             // 기간 라벨(5h/7d)은 흐리지 않게 기본 글자색(다크 메뉴바에서 흰색)으로
             s.append(NSAttributedString(string: tag + " ", attributes: [.font: label, .foregroundColor: NSColor.labelColor]))
             let text = p.map { "\($0)%" } ?? "–"
-            s.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color(forRemaining: p ?? 100)]))
+            s.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color(service, remaining: p)]))
         }
-        if mode != .weekly { add("5h", remaining(usage?.five_hour)) }
-        if mode != .fiveHour { add("7d", remaining(usage?.seven_day)) }
+        // Claude
+        if claudeMissing {
+            s.append(NSAttributedString(string: "Claude ⚠", attributes: [.font: font, .foregroundColor: ServiceColor.claude]))
+        } else {
+            if mode != .weekly { add("5h", remaining(usage?.five_hour), ServiceColor.claude) }
+            if mode != .fiveHour { add("7d", remaining(usage?.seven_day), ServiceColor.claude) }
+        }
         if showModels {
             for l in usage?.limits ?? [] where l.kind == "weekly_scoped" {
-                add(shortName(l.scope?.model?.display_name), remaining(l.window))
+                add(shortName(l.scope?.model?.display_name), remaining(l.window), ServiceColor.claude)
             }
         }
+        // ChatGPT (서비스 사이는 한 칸 더 띄움)
+        if showGPT, let gpt {
+            s.append(NSAttributedString(string: "  ", attributes: [.font: font]))
+            if mode != .weekly { add("5h", remaining(gpt.fiveHour), ServiceColor.chatGPT) }
+            if mode != .fiveHour { add("7d", remaining(gpt.weekly), ServiceColor.chatGPT) }
+        }
         // 429는 일시적이고 직전 값이 그대로 유효하므로 ⚠를 띄우지 않음 (메뉴에만 안내)
-        if let e = lastError, !e.isRateLimited {
+        if !claudeMissing, let e = lastError, !e.isRateLimited {
             s.append(NSAttributedString(string: " ⚠", attributes: [.font: font]))
         }
         if pendingUpdate != nil {
@@ -425,6 +522,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let plan = Credentials.planName().map { " · \($0)" } ?? ""
                 menu.addItem(info("✓ \(name)\(plan)"))
                 if let email = a.email, email != name { menu.addItem(info("   \(email)")) }
+            }
+        }
+        // ChatGPT 로그인 상태 (Codex)
+        if showGPT {
+            switch gptError {
+            case .noCredentials?: menu.addItem(info("⚠ ChatGPT: Codex 로그인 필요 (codex login)"))
+            case .unauthorized?: menu.addItem(info("⚠ ChatGPT: 로그인 만료 — Codex를 한 번 실행해 주세요"))
+            case .some(let e) where !e.isRateLimited: menu.addItem(info("⚠ ChatGPT: \(e.message)"))
+            default:
+                if let plan = gpt?.planName { menu.addItem(info("✓ \(plan) (Codex)")) }
             }
         }
         let loginCheck = NSMenuItem(title: "로그인 확인", action: #selector(checkLogin(_:)), keyEquivalent: "l")
@@ -471,6 +578,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         models.target = self
         models.state = showModels ? .on : .off
         modeMenu.addItem(models)
+        let gptItem = NSMenuItem(title: "ChatGPT 사용량 (초록)", action: #selector(toggleGPT), keyEquivalent: "")
+        gptItem.target = self
+        gptItem.state = showGPT ? .on : .off
+        modeMenu.addItem(gptItem)
         modeItem.submenu = modeMenu
         menu.addItem(modeItem)
 
@@ -519,6 +630,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleModels() {
         showModels.toggle()
+        updateTitle()
+        rebuildMenu()
+    }
+
+    @objc private func toggleGPT() {
+        showGPT.toggle()
+        if showGPT { refreshGPT() }
         updateTitle()
         rebuildMenu()
     }
