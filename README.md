@@ -12,8 +12,8 @@
 - ChatGPT 사용량 (Codex CLI 로그인 사용)
 - 모델별 주간 한도(예: Fable → `Fb`)도 메뉴바에 함께 표시
 - 메뉴바를 클릭하면 맨 위에 한도별 초기화 날짜·시간 표시
-- 로그인 확인: 로그인된 계정·요금제 표시, 미로그인/만료 시 안내
-- 브라우저로 로그인 (Claude Code의 `claude auth login` 사용)
+- 로그인 확인: Claude·ChatGPT 로그인된 계정·요금제를 함께 표시, 미로그인/만료 시 안내와 로그인 버튼
+- 브라우저로 로그인: Claude(Claude Code의 `claude auth login`), ChatGPT(Codex CLI의 `codex login`)
 - 갱신 주기 선택 (1분 / 2분 / 5분), 잠자기 해제 시 즉시 갱신, 요청 제한(429) 시 자동 백오프
 - 표시 방식 선택 (5시간+주간 / 5시간만 / 주간만)
 - 로그인 시 자동 실행
@@ -62,6 +62,15 @@
 | `version.env` | 버전(`VERSION`)·빌드 번호(`BUILD`) |
 
 ## 작업 내역
+
+### 2026-10-29
+- **v1.6.0 (build 24)**
+  - ChatGPT 로그인 확인 추가: "로그인 확인"(⌘L) 팝업에 Claude·ChatGPT 상태를 함께 표시 (ChatGPT는 사용량 요청으로 토큰 유효성 확인, 이메일은 `~/.codex/auth.json`의 `id_token`에서 읽음)
+  - 로그인 안 됨/만료인 서비스가 있으면 팝업에 "Claude 로그인"·"ChatGPT 로그인" 버튼 표시
+  - 메뉴에 "ChatGPT 브라우저로 로그인…" 추가: Codex CLI `codex login` 실행 → 로그인 성공 시 ChatGPT 표시 자동 켜고 사용량 즉시 갱신 (로그 `~/Library/Logs/ClaudeUsageBar-chatgpt-login.log`)
+  - Codex CLI가 없으면 설치 명령(`npm install -g @openai/codex` / `brew install codex`) 안내와 "설치 명령 복사" 버튼
+  - 기존 메뉴 이름을 "Claude 브라우저로 로그인…"으로 변경, CLI 찾기·로그인 실행 코드를 Claude·ChatGPT 공용으로 정리
+  - ChatGPT 표시를 켰는데 Codex 로그인 파일이 없으면 메뉴에 "로그인 안 됨" 표시 (예전엔 아무것도 안 보임)
 
 ### 2026-10-28
 - **v1.5.1 (build 23)**

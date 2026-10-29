@@ -177,6 +177,24 @@ enum ChatGPTAPI {
 
     static var isInstalled: Bool { FileManager.default.fileExists(atPath: authFile.path) }
 
+    /// 로그인된 계정 이메일 (auth.json의 id_token JWT 본문에서 읽음, 서버 요청 없음)
+    static func email() -> String? {
+        guard
+            let data = try? Data(contentsOf: authFile),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let idToken = (json["tokens"] as? [String: Any])?["id_token"] as? String
+        else { return nil }
+        let parts = idToken.split(separator: ".")
+        guard parts.count >= 2 else { return nil }
+        var b64 = parts[1].replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        b64 += String(repeating: "=", count: (4 - b64.count % 4) % 4)
+        guard
+            let payload = Data(base64Encoded: b64),
+            let claims = try? JSONSerialization.jsonObject(with: payload) as? [String: Any]
+        else { return nil }
+        return claims["email"] as? String
+    }
+
     static func fetch() async throws -> ChatGPTUsage {
         guard
             let data = try? Data(contentsOf: authFile),
@@ -322,6 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingUpdate: ReleaseInfo?
     private var profile: Profile?
     private var loginProcess: Process?
+    private var gptLoginProcess: Process?
     private var gpt: ChatGPTUsage?
     private var gptError: UsageError?
     private var updateStatus: String?
@@ -408,7 +427,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// ChatGPT 사용량 (Claude와 별개로 실패해도 Claude 표시는 그대로)
     private func refreshGPT() {
-        guard showGPT, ChatGPTAPI.isInstalled else { return }
+        guard showGPT else { return }
+        guard ChatGPTAPI.isInstalled else {
+            gpt = nil
+            gptError = .noCredentials
+            return
+        }
         Task { @MainActor in
             do {
                 gpt = try await ChatGPTAPI.fetch()
@@ -668,7 +692,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch lastError {
         case .noCredentials?:
             menu.addItem(info("⚠ 로그인 안 됨"))
-            menu.addItem(info("   아래 \"브라우저로 로그인…\"을 눌러 주세요"))
+            menu.addItem(info("   아래 \"Claude 브라우저로 로그인…\"을 눌러 주세요"))
         case .unauthorized?:
             menu.addItem(info("⚠ 로그인 만료"))
             menu.addItem(info("   Claude Code를 한 번 실행하면 갱신됩니다"))
@@ -683,20 +707,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ChatGPT 로그인 상태 (Codex)
         if showGPT {
             switch gptError {
-            case .noCredentials?: menu.addItem(info("⚠ ChatGPT: Codex 로그인 필요 (codex login)"))
-            case .unauthorized?: menu.addItem(info("⚠ ChatGPT: 로그인 만료 — Codex를 한 번 실행해 주세요"))
+            case .noCredentials?: menu.addItem(info("⚠ ChatGPT: 로그인 안 됨 — \"ChatGPT 브라우저로 로그인…\""))
+            case .unauthorized?: menu.addItem(info("⚠ ChatGPT: 로그인 만료 — \"ChatGPT 브라우저로 로그인…\""))
             case .some(let e) where !e.isRateLimited: menu.addItem(info("⚠ ChatGPT: \(e.message)"))
             default:
-                if let plan = gpt?.planName { menu.addItem(info("✓ \(plan) (Codex)")) }
+                if let plan = gpt?.planName {
+                    let email = ChatGPTAPI.email().map { " · \($0)" } ?? ""
+                    menu.addItem(info("✓ \(plan)\(email)"))
+                }
             }
         }
         let loginCheck = NSMenuItem(title: "로그인 확인", action: #selector(checkLogin(_:)), keyEquivalent: "l")
         loginCheck.target = self
         menu.addItem(loginCheck)
         if loginProcess != nil {
-            menu.addItem(info("브라우저에서 로그인 진행 중…"))
+            menu.addItem(info("Claude: 브라우저에서 로그인 진행 중…"))
         } else {
-            let browser = NSMenuItem(title: "브라우저로 로그인…", action: #selector(loginWithBrowser), keyEquivalent: "")
+            let browser = NSMenuItem(title: "Claude 브라우저로 로그인…", action: #selector(loginWithBrowser), keyEquivalent: "")
+            browser.target = self
+            menu.addItem(browser)
+        }
+        if gptLoginProcess != nil {
+            menu.addItem(info("ChatGPT: 브라우저에서 로그인 진행 중…"))
+        } else {
+            let browser = NSMenuItem(title: "ChatGPT 브라우저로 로그인…", action: #selector(loginGPTWithBrowser), keyEquivalent: "")
             browser.target = self
             menu.addItem(browser)
         }
@@ -846,20 +880,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Claude Code CLI 경로 (GUI 앱은 셸 PATH를 못 받으므로 흔한 설치 위치 → 로그인 셸 순으로 찾음)
-    private func claudeCLI() -> String? {
+    /// CLI 경로 (GUI 앱은 셸 PATH를 못 받으므로 흔한 설치 위치 → 로그인 셸 순으로 찾음)
+    private func findCLI(_ name: String, extra: [String] = []) -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [
-            "\(home)/.local/bin/claude",
-            "\(home)/.local/share/node/current/bin/claude",
-            "\(home)/.claude/local/claude",
-            "/opt/homebrew/bin/claude",
-            "/usr/local/bin/claude",
+        let candidates = extra + [
+            "\(home)/.local/bin/\(name)",
+            "\(home)/.local/share/node/current/bin/\(name)",
+            "\(home)/.npm-global/bin/\(name)",
+            "/opt/homebrew/bin/\(name)",
+            "/usr/local/bin/\(name)",
         ]
         if let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) { return found }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-ilc", "command -v claude"]
+        p.arguments = ["-ilc", "command -v \(name)"]
         let out = Pipe()
         p.standardOutput = out
         p.standardError = Pipe()
@@ -870,10 +904,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return path.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
     }
 
+    /// 로그인 CLI를 실행하고 끝나면 성공 여부와 로그 마지막 3줄을 넘김 (로그는 ~/Library/Logs/<logName>)
+    private func runLogin(_ cli: String, _ args: [String], logName: String,
+                          done: @escaping (_ ok: Bool, _ tail: String) -> Void) -> Process? {
+        let log = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/\(logName)")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: cli)
+        p.arguments = args
+        p.standardInput = FileHandle.nullDevice
+        if let h = try? FileHandle(forWritingTo: log) {
+            p.standardOutput = h
+            p.standardError = h
+        }
+        p.terminationHandler = { proc in
+            let tail = (try? String(contentsOf: log, encoding: .utf8))?
+                .split(separator: "\n").suffix(3).joined(separator: "\n") ?? ""
+            DispatchQueue.main.async { done(proc.terminationStatus == 0, tail) }
+        }
+        do {
+            try p.run()
+            return p
+        } catch {
+            alert("브라우저 로그인을 시작하지 못했습니다.", detail: error.localizedDescription, buttons: ["확인"])
+            return nil
+        }
+    }
+
     /// `claude auth login`으로 브라우저 로그인 → 키체인 갱신 → 계정·사용량 다시 확인
     @objc private func loginWithBrowser() {
         guard loginProcess == nil else { return }
-        guard let cli = claudeCLI() else {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        guard let cli = findCLI("claude", extra: ["\(home)/.claude/local/claude"]) else {
             alert("Claude Code를 찾을 수 없습니다.",
                   detail: "브라우저 로그인은 Claude Code(claude)로 진행됩니다. Claude Code를 먼저 설치해 주세요.",
                   buttons: ["확인"])
@@ -885,45 +948,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                  buttons: ["브라우저로 로그인", "취소"]) != .alertFirstButtonReturn {
             return
         }
-
-        let log = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/ClaudeUsageBar-login.log")
-        FileManager.default.createFile(atPath: log.path, contents: nil)
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: cli)
-        p.arguments = ["auth", "login", "--claudeai"]
-        p.standardInput = FileHandle.nullDevice
-        if let h = try? FileHandle(forWritingTo: log) {
-            p.standardOutput = h
-            p.standardError = h
-        }
-        p.terminationHandler = { [weak self] proc in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.loginProcess = nil
-                if proc.terminationStatus == 0 {
-                    self.lastError = nil
-                    self.nextAllowedFetch = .distantPast
-                    self.checkLogin(self)  // 결과 팝업 + 사용량 갱신
-                    self.refresh()
-                } else {
-                    let tail = (try? String(contentsOf: log, encoding: .utf8))?
-                        .split(separator: "\n").suffix(3).joined(separator: "\n") ?? ""
-                    self.rebuildMenu()
-                    self.alert("브라우저 로그인에 실패했습니다.", detail: tail, buttons: ["확인"])
-                }
+        loginProcess = runLogin(cli, ["auth", "login", "--claudeai"], logName: "ClaudeUsageBar-login.log") { [weak self] ok, tail in
+            guard let self else { return }
+            self.loginProcess = nil
+            if ok {
+                self.lastError = nil
+                self.nextAllowedFetch = .distantPast
+                self.checkLogin(self)  // 결과 팝업 + 사용량 갱신
+                self.refresh()
+            } else {
+                self.rebuildMenu()
+                self.alert("Claude 브라우저 로그인에 실패했습니다.", detail: tail, buttons: ["확인"])
             }
         }
-        do {
-            try p.run()
-            loginProcess = p
-            rebuildMenu()
-        } catch {
-            alert("브라우저 로그인을 시작하지 못했습니다.", detail: error.localizedDescription, buttons: ["확인"])
-        }
+        rebuildMenu()
     }
 
-    /// 로그인 상태 확인 (sender가 nil이면 조용히, 메뉴에서 누르면 팝업으로 결과 안내)
+    /// `codex login`으로 ChatGPT 브라우저 로그인 → ~/.codex/auth.json 갱신 → ChatGPT 사용량 다시 확인
+    @objc private func loginGPTWithBrowser() {
+        guard gptLoginProcess == nil else { return }
+        guard let cli = findCLI("codex", extra: ["/Applications/Codex.app/Contents/Resources/codex"]) else {
+            let install = "npm install -g @openai/codex"
+            if alert("Codex CLI를 찾을 수 없습니다.",
+                     detail: "ChatGPT 사용량은 OpenAI Codex CLI의 로그인으로 가져옵니다.\n터미널에서 아래 명령으로 설치한 뒤 다시 눌러 주세요.\n\n\(install)\n(또는 brew install codex)",
+                     buttons: ["설치 명령 복사", "닫기"]) == .alertFirstButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(install, forType: .string)
+            }
+            return
+        }
+        if gpt != nil,
+           alert("다른 계정으로 로그인할까요?",
+                 detail: "Codex CLI의 로그인도 함께 바뀝니다.",
+                 buttons: ["브라우저로 로그인", "취소"]) != .alertFirstButtonReturn {
+            return
+        }
+        gptLoginProcess = runLogin(cli, ["login"], logName: "ClaudeUsageBar-chatgpt-login.log") { [weak self] ok, tail in
+            guard let self else { return }
+            self.gptLoginProcess = nil
+            if ok {
+                self.showGPT = true
+                self.gptError = nil
+                self.updateTitle()
+                self.checkLogin(self)  // 결과 팝업 + ChatGPT 사용량 갱신
+            } else {
+                self.rebuildMenu()
+                self.alert("ChatGPT 브라우저 로그인에 실패했습니다.", detail: tail, buttons: ["확인"])
+            }
+        }
+        rebuildMenu()
+    }
+
+    /// 로그인 상태 확인 — Claude·ChatGPT 모두 (sender가 nil이면 조용히, 메뉴에서 누르면 팝업으로 결과 안내)
     @objc private func checkLogin(_ sender: Any?) {
         Task { @MainActor in
             var failure: UsageError?
@@ -940,28 +1016,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 failure = .other(error.localizedDescription)
             }
+
+            // ChatGPT: 표시를 켰거나 Codex 로그인 파일이 있으면 사용량 요청으로 토큰이 유효한지 확인
+            let checkGPT = showGPT || ChatGPTAPI.isInstalled
+            if checkGPT {
+                do {
+                    gpt = try await ChatGPTAPI.fetch()
+                    gptError = nil
+                } catch let e as UsageError {
+                    gptError = e
+                    if !e.isRateLimited { gpt = nil }
+                } catch {
+                    gptError = .other(error.localizedDescription)
+                }
+            }
             updateTitle()
             rebuildMenu()
 
             guard sender != nil else { return }
+            var lines: [String] = []
+            var needClaude = false, needGPT = false
+
             if let a = profile?.account, failure == nil {
-                let plan = Credentials.planName().map { "\n요금제: \($0)" } ?? ""
-                alert("로그인되어 있습니다.",
-                      detail: "\(a.display_name ?? "")\n\(a.email ?? "")\(plan)",
-                      buttons: ["확인"])
+                let plan = Credentials.planName().map { " · \($0)" } ?? ""
+                lines.append("Claude ✓ 로그인됨\(plan)")
+                lines.append("   \([a.display_name, a.email].compactMap { $0 }.joined(separator: " · "))")
             } else {
                 switch failure {
-                case .noCredentials?:
-                    alert("로그인되어 있지 않습니다.",
-                          detail: "메뉴의 \"브라우저로 로그인…\"을 눌러 로그인해 주세요.", buttons: ["확인"])
+                case .noCredentials?: lines.append("Claude ⚠ 로그인 안 됨"); needClaude = true
                 case .unauthorized?:
-                    alert("로그인이 만료되었습니다.",
-                          detail: "Claude Code를 한 번 실행하면 자동으로 갱신됩니다.\n갱신되지 않으면 메뉴의 \"브라우저로 로그인…\"으로 다시 로그인해 주세요.",
-                          buttons: ["확인"])
-                default:
-                    alert("로그인 상태를 확인하지 못했습니다.", detail: failure?.message ?? "", buttons: ["확인"])
+                    lines.append("Claude ⚠ 로그인 만료 — Claude Code를 한 번 실행하거나 다시 로그인")
+                    needClaude = true
+                default: lines.append("Claude ⚠ 확인 실패: \(failure?.message ?? "")")
                 }
             }
+            lines.append("")
+            if !checkGPT {
+                lines.append("ChatGPT — 로그인 안 됨 (사용량 표시 꺼짐)")
+                needGPT = true
+            } else if let g = gpt, gptError == nil {
+                lines.append("ChatGPT ✓ 로그인됨\(g.planName.map { " · \($0)" } ?? "")")
+                if let email = ChatGPTAPI.email() { lines.append("   \(email)") }
+            } else {
+                switch gptError {
+                case .noCredentials?: lines.append("ChatGPT ⚠ 로그인 안 됨"); needGPT = true
+                case .unauthorized?: lines.append("ChatGPT ⚠ 로그인 만료"); needGPT = true
+                default: lines.append("ChatGPT ⚠ 확인 실패: \(gptError?.message ?? "")")
+                }
+            }
+
+            let title = (needClaude || needGPT) ? "로그인이 필요한 서비스가 있습니다." : "로그인 상태"
+            var buttons = ["확인"]
+            if needClaude { buttons.append("Claude 로그인") }
+            if needGPT { buttons.append("ChatGPT 로그인") }
+            let r = alert(title, detail: lines.joined(separator: "\n"), buttons: buttons)
+            let picked = r.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+            guard picked > 0, picked < buttons.count else { return }
+            if buttons[picked] == "Claude 로그인" { loginWithBrowser() } else { loginGPTWithBrowser() }
         }
     }
 
