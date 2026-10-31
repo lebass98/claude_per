@@ -63,6 +63,11 @@
 
 ## 작업 내역
 
+### 2026-10-31
+- **v1.6.1 (build 25)**
+  - "Claude 브라우저로 로그인…"을 누르면 "Claude Code를 찾을 수 없습니다"가 뜨던 문제 수정: 터미널용 `claude`가 없고 Claude 데스크톱 앱만 설치된 경우, 앱에 내장된 Claude Code(`~/Library/Application Support/Claude/claude-code/<버전>/<해시>/claude.app/Contents/MacOS/claude`, 최신 버전)로 `auth login` 실행
+  - 찾지 못할 때 안내 문구를 "Claude 데스크톱 앱 또는 Claude Code 설치"로 변경
+
 ### 2026-10-29
 - **v1.6.0 (build 24)**
   - ChatGPT 로그인 확인 추가: "로그인 확인"(⌘L) 팝업에 Claude·ChatGPT 상태를 함께 표시 (ChatGPT는 사용량 요청으로 토큰 유효성 확인, 이메일은 `~/.codex/auth.json`의 `id_token`에서 읽음)

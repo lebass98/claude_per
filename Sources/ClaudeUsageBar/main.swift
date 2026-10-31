@@ -932,13 +932,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Claude 데스크톱 앱에 내장된 Claude Code (터미널용 claude를 따로 설치하지 않은 경우)
+    /// ~/Library/Application Support/Claude/claude-code/<버전>/<해시>/claude.app/Contents/MacOS/claude 중 최신 버전
+    private func desktopClaudeCLI() -> String? {
+        let fm = FileManager.default
+        let root = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Claude/claude-code")
+        let versions = ((try? fm.contentsOfDirectory(atPath: root.path)) ?? [])
+            .sorted { $0.compare($1, options: .numeric) == .orderedDescending }
+        for v in versions {
+            let dir = root.appendingPathComponent(v)
+            for hash in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] {
+                let bin = dir.appendingPathComponent("\(hash)/claude.app/Contents/MacOS/claude").path
+                if fm.isExecutableFile(atPath: bin) { return bin }
+            }
+        }
+        return nil
+    }
+
     /// `claude auth login`으로 브라우저 로그인 → 키체인 갱신 → 계정·사용량 다시 확인
     @objc private func loginWithBrowser() {
         guard loginProcess == nil else { return }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        guard let cli = findCLI("claude", extra: ["\(home)/.claude/local/claude"]) else {
+        guard let cli = findCLI("claude", extra: ["\(home)/.claude/local/claude"]) ?? desktopClaudeCLI() else {
             alert("Claude Code를 찾을 수 없습니다.",
-                  detail: "브라우저 로그인은 Claude Code(claude)로 진행됩니다. Claude Code를 먼저 설치해 주세요.",
+                  detail: "브라우저 로그인은 Claude Code(claude)로 진행됩니다. Claude 데스크톱 앱 또는 Claude Code를 먼저 설치해 주세요.",
                   buttons: ["확인"])
             return
         }
